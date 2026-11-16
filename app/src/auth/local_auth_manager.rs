@@ -37,10 +37,6 @@ impl AuthManager {
 
     pub fn authenticate_api_key(&self, _: String, _: &mut ModelContext<Self>) {}
 
-    pub fn authorize_device(&self, _: &mut ModelContext<Self>) {}
-
-    pub(super) fn log_out(&mut self, _: &mut ModelContext<Self>) {}
-
     pub fn set_needs_reauth(&self, _: bool, _: &mut ModelContext<Self>) {}
 
     pub fn create_anonymous_user(&self, _: Option<String>, _: &mut ModelContext<Self>) {}

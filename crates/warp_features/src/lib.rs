@@ -1133,8 +1133,61 @@ impl FeatureFlag {
             );
         }
 
-        overrides::get_override(*self)
-            .or(USER_PREFERENCE_MAP[*self as usize].get())
+        if let Some(enabled) = overrides::get_override(*self) {
+            return enabled;
+        }
+        if matches!(
+            self,
+            Self::SshRemoteServer
+            | Self::AgentMode
+            | Self::AgentView
+            | Self::AgentManagementView
+            | Self::AgentOnboarding
+            | Self::AgentPredict
+            | Self::AgentTips
+            | Self::AgentHarness
+            | Self::AcpHarness
+            | Self::AgentHooks
+            | Self::AIRules
+            | Self::AIContextMenuEnabled
+            | Self::AIContextMenuCommands
+            | Self::AIContextMenuCode
+            | Self::AtMenuOutsideOfAIMode
+            | Self::AIResumeButton
+            | Self::AIMemories
+            | Self::AgentModeWorkflows
+            | Self::SuggestedAgentModeWorkflows
+            | Self::AIGeneratedOnboardingSuggestions
+            | Self::McpServer
+            | Self::FileBasedMcp
+            | Self::McpOauth
+            | Self::FactoryMcp
+            | Self::PreviewUrlsMcp
+            | Self::CloudMode
+            | Self::CloudModeFromLocalSession
+            | Self::CloudEnvironments
+            | Self::CloudRunners
+            | Self::CloudAgentRunners
+            | Self::ScheduledAmbientAgents
+            | Self::AmbientAgentsCommandLine
+            | Self::OzHandoff
+            | Self::AgentCliLaunchModal
+            | Self::LocalClaudeCodexChildHarnesses
+            | Self::CLIAgentRichInput
+            | Self::HOANotifications
+            | Self::CodexNotifications
+            | Self::OpenCodeNotifications
+            | Self::AgentModeComputerUse
+            | Self::LocalComputerUse
+            | Self::BackgroundComputerUse
+            | Self::FullSourceCodeEmbedding
+            | Self::RemoteCodebaseIndexing
+            | Self::NldPromptHistoryMatch
+        ) {
+            return false;
+        }
+
+        USER_PREFERENCE_MAP[*self as usize].get()
             .or(Some(FLAG_STATES[*self as usize].load(Ordering::Relaxed)))
             .unwrap_or(false)
     }

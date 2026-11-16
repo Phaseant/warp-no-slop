@@ -979,14 +979,6 @@ impl TypedActionView for TuiInputView {
                 {
                     self.open_inline_menu(TuiInputSuggestionsMode::PromptAndCommandHistory, ctx);
                     TuiEditorInteractionOutcome::FollowCursor
-                // With nothing left to delete, backspace removes the `!`
-                // affordance instead; typed text is preserved.
-                } else if matches!(*command, TuiEditorCommand::Backspace)
-                    && self.is_shell_mode(ctx)
-                    && self.is_cursor_at_start(ctx)
-                {
-                    self.exit_shell_mode(ctx);
-                    TuiEditorInteractionOutcome::FollowCursor
                 } else if matches!(*command, TuiEditorCommand::Backspace)
                     && self.plain_text(ctx).is_empty()
                     && self.is_cursor_at_start(ctx)
@@ -1318,7 +1310,7 @@ impl TuiInputView {
             if is_autodetection_enabled {
                 input_mode.enable_autodetection(InputType::AI, ctx);
             } else {
-                input_mode.set_input_config(AI_LOCKED_CONFIG, true, None, ctx);
+                input_mode.set_input_config(SHELL_LOCKED_CONFIG, true, None, ctx);
             }
         });
     }

@@ -1,55 +1,33 @@
-#[cfg(feature = "local_terminal")]
 mod local_auth_client;
-#[cfg(feature = "local_terminal")]
 #[path = "local_session.rs"]
 mod session;
-#[cfg(not(feature = "local_terminal"))]
-mod session;
-
 use std::fmt;
 use std::result::Result as StdResult;
-use std::sync::Arc;
 
-use anyhow::{Context as _, Result, anyhow};
+use anyhow::Result;
 use async_trait::async_trait;
 use cloud_objects::ids::ServerId;
-use cynic::{MutationBuilder, QueryBuilder};
 use firebase::FirebaseError;
 use instant::Duration;
+pub use local_auth_client::AuthClientImpl;
 #[cfg(any(test, feature = "test-util"))]
 use mockall::automock;
 pub use session::*;
 use thiserror::Error;
 pub use user_uid::{TEST_USER_EMAIL, TEST_USER_UID, UserUid};
 use warp_errors::{AnyhowErrorExt, ErrorExt, register_error};
-use warp_graphql::client::Operation;
 use warp_graphql::mutations::create_anonymous_user::{
-    AnonymousUserType, CreateAnonymousUser, CreateAnonymousUserResult, CreateAnonymousUserVariables,
+    AnonymousUserType, CreateAnonymousUserResult,
 };
-use warp_graphql::mutations::expire_api_key::{
-    ExpireApiKey, ExpireApiKeyResult, ExpireApiKeyVariables,
-};
-use warp_graphql::mutations::generate_api_key::{
-    GenerateApiKey, GenerateApiKeyInput, GenerateApiKeyResult, GenerateApiKeyVariables,
-};
-use warp_graphql::mutations::mint_custom_token::{MintCustomTokenResult, MintCustomTokenVariables};
-use warp_graphql::mutations::set_user_is_onboarded::{
-    SetUserIsOnboarded, SetUserIsOnboardedResult, SetUserIsOnboardedVariables,
-};
-use warp_graphql::mutations::update_user_settings::{
-    UpdateUserSettings, UpdateUserSettingsInput, UpdateUserSettingsResult,
-    UpdateUserSettingsVariables,
-};
-use warp_graphql::queries::api_keys::{
-    ApiKeyProperties, ApiKeyPropertiesResult, ApiKeys, ApiKeysVariables,
-};
-use warp_graphql::queries::get_user::{GetUser, GetUserVariables, UserOutput as GqlUserOutput};
-use warp_graphql::queries::get_user_settings::{GetUserSettings, GetUserSettingsVariables};
+use warp_graphql::mutations::expire_api_key::ExpireApiKeyResult;
+use warp_graphql::mutations::generate_api_key::GenerateApiKeyResult;
+use warp_graphql::mutations::mint_custom_token::MintCustomTokenResult;
+use warp_graphql::mutations::update_user_settings::UpdateUserSettingsInput;
+use warp_graphql::queries::api_keys::ApiKeyProperties;
+use warp_graphql::queries::get_user::UserOutput as GqlUserOutput;
 use warp_server_auth::credentials::{AuthToken, Credentials, FirebaseToken, LoginToken};
 pub use warp_server_auth::user_uid;
 
-use crate::base_client::{BaseClient, TEAM_UID_HEADER};
-use crate::graphql_helpers::{send_graphql_request, send_graphql_request_with_options};
 use crate::ids::ApiKeyUid;
 
 /// Authentication and authenticated-transport conditions observed by shared client code.
@@ -94,12 +72,6 @@ pub struct AgentIdentity {
     pub uid: String,
     pub name: String,
     pub available: bool,
-}
-
-/// Wrapper for the `GET /api/v1/agent/identities` response.
-#[derive(serde::Deserialize)]
-struct AgentIdentitiesResponse {
-    agents: Vec<AgentIdentity>,
 }
 
 /// User settings that are stored server-side on a per-user basis.
@@ -209,323 +181,6 @@ pub trait AuthClient: Send + Sync {
     -> Result<Vec<AgentIdentity>>;
 }
 
-/// Implements the [`AuthClient`] trait on top of a base client and auth session.
-#[cfg(not(feature = "local_terminal"))]
-pub struct AuthClientImpl {
-    base_client: Arc<BaseClient>,
-    auth_session: Arc<AuthSession>,
-}
-
-#[cfg(feature = "local_terminal")]
-pub use local_auth_client::AuthClientImpl;
-
-#[cfg(not(feature = "local_terminal"))]
-impl AuthClientImpl {
-    pub fn new(base_client: Arc<BaseClient>) -> Self {
-        let auth_session = base_client.auth_session();
-        Self {
-            base_client,
-            auth_session,
-        }
-    }
-
-    async fn update_settings(
-        &self,
-        input: UpdateUserSettingsInput,
-        unknown_error_message: &'static str,
-    ) -> Result<()> {
-        let operation = UpdateUserSettings::build(UpdateUserSettingsVariables {
-            input,
-            request_context: warp_graphql::client::get_request_context(),
-        });
-        let result = send_graphql_request(&self.base_client, operation, None)
-            .await?
-            .update_user_settings;
-        Self::on_settings_updated(result, unknown_error_message)
-    }
-
-    fn on_settings_updated(
-        result: UpdateUserSettingsResult,
-        unknown_error_message: &'static str,
-    ) -> Result<()> {
-        match result {
-            UpdateUserSettingsResult::UpdateUserSettingsOutput(_) => Ok(()),
-            UpdateUserSettingsResult::UserFacingError(error) => Err(anyhow!(
-                warp_graphql::client::get_user_facing_error_message(error)
-            )),
-            UpdateUserSettingsResult::Unknown => Err(anyhow!(unknown_error_message)),
-        }
-    }
-}
-
-#[cfg(not(feature = "local_terminal"))]
-#[cfg_attr(not(target_family = "wasm"), async_trait)]
-#[cfg_attr(target_family = "wasm", async_trait(?Send))]
-impl AuthClient for AuthClientImpl {
-    async fn create_anonymous_user(
-        &self,
-        referral_code: Option<String>,
-        anonymous_user_type: AnonymousUserType,
-    ) -> Result<CreateAnonymousUserResult> {
-        let operation = CreateAnonymousUser::build(CreateAnonymousUserVariables {
-            input: warp_graphql::mutations::create_anonymous_user::CreateAnonymousUserInput {
-                anonymous_user_type,
-                expiration_type: warp_graphql::mutations::create_anonymous_user::AnonymousUserExpirationType::NoExpiration,
-                referral_code,
-            },
-            request_context: warp_graphql::client::get_request_context(),
-        });
-        let response = operation
-            .send_request(
-                self.base_client.owned_http_client(),
-                self.base_client.graphql_request_options_with_token(None),
-            )
-            .await?;
-        Ok(response
-            .data
-            .ok_or_else(|| anyhow!("missing data in response"))?
-            .create_anonymous_user)
-    }
-
-    async fn get_or_refresh_access_token(&self) -> Result<AuthToken> {
-        self.auth_session.get_or_refresh_access_token().await
-    }
-
-    async fn fetch_user(
-        &self,
-        token: LoginToken,
-        for_refresh: bool,
-    ) -> StdResult<FetchUserResult, UserAuthenticationError> {
-        let new_credentials = self.auth_session.exchange_credentials(token).await?;
-        let auth_token = new_credentials.bearer_token();
-        let user_output = self
-            .fetch_user_properties(auth_token.as_bearer_token())
-            .await
-            .context("Failed to fetch user response data")
-            .map_err(UserAuthenticationError::Unexpected)?;
-        // Store the owner type if using an API key.
-        let new_credentials = match new_credentials {
-            Credentials::ApiKey { key, .. } => Credentials::ApiKey {
-                key,
-                owner_type: user_output.api_key_owner_type,
-            },
-            other => other,
-        };
-        Ok(FetchUserResult {
-            user_output,
-            credentials: new_credentials,
-            from_refresh: for_refresh,
-        })
-    }
-
-    async fn fetch_new_custom_token(&self) -> Result<MintCustomTokenResult> {
-        let operation = warp_graphql::mutations::mint_custom_token::MintCustomToken::build(
-            MintCustomTokenVariables {
-                request_context: warp_graphql::client::get_request_context(),
-            },
-        );
-        let response = send_graphql_request(&self.base_client, operation, None).await?;
-        Ok(response.mint_custom_token)
-    }
-
-    fn on_custom_token_fetched(
-        &self,
-        response: Result<MintCustomTokenResult>,
-    ) -> Result<String, MintCustomTokenError> {
-        match response {
-            Ok(MintCustomTokenResult::MintCustomTokenOutput(output)) => Ok(output.custom_token),
-            Ok(MintCustomTokenResult::UserFacingError(error)) => {
-                Err(MintCustomTokenError::UserFacingError(
-                    warp_graphql::client::get_user_facing_error_message(error),
-                ))
-            }
-            Ok(MintCustomTokenResult::Unknown) | Err(_) => Err(MintCustomTokenError::Unknown),
-        }
-    }
-
-    async fn fetch_user_properties<'a>(
-        &self,
-        auth_token: Option<&'a str>,
-    ) -> Result<GqlUserOutput> {
-        let operation = GetUser::build(GetUserVariables {
-            request_context: warp_graphql::client::get_request_context(),
-        });
-        let mut options = self
-            .base_client
-            .graphql_request_options_with_token(auth_token.map(ToOwned::to_owned));
-        options.headers.insert(
-            EXPERIMENT_ID_HEADER.to_string(),
-            self.base_client.anonymous_id(),
-        );
-        let response = operation
-            .send_request(self.base_client.owned_http_client(), options)
-            .await?
-            .data
-            .ok_or_else(|| anyhow!("Expected valid response.data"))?;
-        match response.user {
-            warp_graphql::queries::get_user::UserResult::UserOutput(user_output) => Ok(user_output),
-            warp_graphql::queries::get_user::UserResult::Unknown => {
-                Err(anyhow!("Unable to fetch user"))
-            }
-        }
-    }
-
-    async fn get_user_settings(&self) -> Result<Option<SyncedUserSettings>> {
-        let operation = GetUserSettings::build(GetUserSettingsVariables {
-            request_context: warp_graphql::client::get_request_context(),
-        });
-        let response = send_graphql_request(self.base_client.as_ref(), operation, None).await?;
-        match response.user {
-            warp_graphql::queries::get_user_settings::UserResult::UserOutput(user_output) => {
-                Ok(user_output
-                    .user
-                    .settings
-                    .map(|settings| SyncedUserSettings {
-                        is_cloud_conversation_storage_enabled: settings
-                            .is_cloud_conversation_storage_enabled,
-                        is_crash_reporting_enabled: settings.is_crash_reporting_enabled,
-                        is_telemetry_enabled: settings.is_telemetry_enabled,
-                    }))
-            }
-            warp_graphql::queries::get_user_settings::UserResult::Unknown => {
-                Err(anyhow!("Unable to fetch user settings"))
-            }
-        }
-    }
-
-    async fn set_is_telemetry_enabled(&self, value: bool) -> Result<()> {
-        self.update_settings(
-            UpdateUserSettingsInput {
-                telemetry_enabled: Some(value),
-                ..Default::default()
-            },
-            "failed to set telemetry enabled",
-        )
-        .await
-    }
-
-    async fn set_is_crash_reporting_enabled(&self, value: bool) -> Result<()> {
-        self.update_settings(
-            UpdateUserSettingsInput {
-                crash_reporting_enabled: Some(value),
-                ..Default::default()
-            },
-            "failed to set crash reporting enabled",
-        )
-        .await
-    }
-
-    async fn set_is_cloud_conversation_storage_enabled(&self, value: bool) -> Result<()> {
-        self.update_settings(
-            UpdateUserSettingsInput {
-                cloud_conversation_storage_enabled: Some(value),
-                ..Default::default()
-            },
-            "failed to set cloud conversation storage enabled",
-        )
-        .await
-    }
-
-    async fn update_user_settings(&self, input: UpdateUserSettingsInput) -> Result<()> {
-        self.update_settings(input, "failed to update user settings")
-            .await
-    }
-
-    async fn set_user_is_onboarded(&self) -> Result<bool> {
-        let operation = SetUserIsOnboarded::build(SetUserIsOnboardedVariables {
-            request_context: warp_graphql::client::get_request_context(),
-        });
-        let result = send_graphql_request(self.base_client.as_ref(), operation, None)
-            .await?
-            .set_user_is_onboarded;
-        match result {
-            SetUserIsOnboardedResult::SetUserIsOnboardedOutput(_) => Ok(true),
-            SetUserIsOnboardedResult::UserFacingError(error) => Err(anyhow!(
-                warp_graphql::client::get_user_facing_error_message(error)
-            )),
-            SetUserIsOnboardedResult::Unknown => Err(anyhow!("failed to set user is onboarded")),
-        }
-    }
-
-    async fn request_device_code(
-        &self,
-    ) -> StdResult<oauth2::StandardDeviceAuthorizationResponse, UserAuthenticationError> {
-        self.auth_session.request_device_code().await
-    }
-
-    async fn exchange_device_access_token(
-        &self,
-        details: &oauth2::StandardDeviceAuthorizationResponse,
-        timeout: Duration,
-    ) -> StdResult<FirebaseToken, UserAuthenticationError> {
-        self.auth_session
-            .exchange_device_access_token(details, timeout)
-            .await
-    }
-
-    async fn list_api_keys(&self, team_uid: Option<ServerId>) -> Result<Vec<ApiKeyProperties>> {
-        let operation = ApiKeys::build(ApiKeysVariables {
-            request_context: warp_graphql::client::get_request_context(),
-        });
-        let mut options = self.base_client.graphql_request_options(None).await?;
-        if let Some(team_uid) = team_uid {
-            options
-                .headers
-                .insert(TEAM_UID_HEADER.to_string(), team_uid.uid());
-        }
-        let response =
-            send_graphql_request_with_options(self.base_client.as_ref(), operation, options)
-                .await?;
-        match response.api_keys {
-            ApiKeyPropertiesResult::ApiKeyPropertiesOutput(output) => Ok(output.api_keys),
-            ApiKeyPropertiesResult::UserFacingError(error) => Err(anyhow!(
-                warp_graphql::client::get_user_facing_error_message(error)
-            )),
-            ApiKeyPropertiesResult::Unknown => Err(anyhow!("failed to fetch API keys")),
-        }
-    }
-
-    async fn create_api_key(
-        &self,
-        name: String,
-        team_id: Option<cynic::Id>,
-        agent_uid: Option<cynic::Id>,
-        expires_at: Option<warp_graphql::scalars::Time>,
-    ) -> Result<GenerateApiKeyResult> {
-        let operation = GenerateApiKey::build(GenerateApiKeyVariables {
-            input: GenerateApiKeyInput {
-                name,
-                team_id,
-                agent_uid,
-                expires_at,
-            },
-            request_context: warp_graphql::client::get_request_context(),
-        });
-        let response = send_graphql_request(self.base_client.as_ref(), operation, None).await?;
-        Ok(response.generate_api_key)
-    }
-
-    async fn expire_api_key(&self, key_uid: &ApiKeyUid) -> Result<ExpireApiKeyResult> {
-        let operation = ExpireApiKey::build(ExpireApiKeyVariables {
-            key_uid: key_uid.into(),
-            request_context: warp_graphql::client::get_request_context(),
-        });
-        let response = send_graphql_request(self.base_client.as_ref(), operation, None).await?;
-        Ok(response.expire_api_key)
-    }
-
-    async fn list_agent_identities(
-        &self,
-        team_uid: Option<ServerId>,
-    ) -> Result<Vec<AgentIdentity>> {
-        let response: AgentIdentitiesResponse = self
-            .base_client
-            .get_public_api_for_team("agent/identities", team_uid)
-            .await?;
-        Ok(response.agents)
-    }
-}
-
 /// Error type when retrieving a user and validating it against Firebase.
 #[derive(Error, Debug)]
 pub enum UserAuthenticationError {
@@ -608,7 +263,3 @@ pub enum MintCustomTokenError {
     #[error("Failed to create new custom token with unknown error")]
     Unknown,
 }
-
-#[cfg(all(test, not(feature = "local_terminal")))]
-#[path = "mod_tests.rs"]
-mod tests;

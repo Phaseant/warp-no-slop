@@ -7,10 +7,9 @@ use settings::{
 };
 use strum_macros::EnumIter;
 use warp_errors::report_error;
-use warp_util::path::ShellFamily;
 use warpui::{AppContext, Entity, ModelContext, SingletonEntity};
 
-use crate::terminal::ssh::util::{SshWarpifyCommand, parse_interactive_ssh_command};
+use crate::terminal::ssh::util::SshWarpifyCommand;
 
 // Cannot directly use Vec<Regex> here b/c Regex doesn't impl Eq, Serialize, and Deserialize.
 maybe_define_setting!(AddedSubshellCommands, group: WarpifySettings, {
@@ -517,14 +516,14 @@ impl WarpifySettings {
     /// This function determines if we should ask the user whether they want to bootstrap a subshell.
     /// It determines this by matching their command against some hardcoded regexes and those added
     /// manually by the user.
-    pub fn is_compatible_subshell_command(&self, command: &str, shell_family: ShellFamily) -> bool {
+    pub fn is_compatible_subshell_command(&self, command: &str) -> bool {
         let command = command.trim();
-        if Self::is_built_in_subshell_match(command) {
-            return true;
-        }
-
         if SshWarpifyCommand::matches(command).is_some_and(|command| command.is_ssh_like_command())
         {
+            return false;
+        }
+
+        if Self::is_built_in_subshell_match(command) {
             return true;
         }
 
@@ -532,14 +531,6 @@ impl WarpifySettings {
             if command_regex.is_match(command) {
                 return true;
             }
-        }
-
-        // While in-band generators are our best option for warpifying ssh sessions from powershell, hard-code
-        // the warpify subshell banner to show up.
-        if matches!(shell_family, ShellFamily::PowerShell)
-            && parse_interactive_ssh_command(command).is_some()
-        {
-            return true;
         }
 
         false

@@ -249,8 +249,9 @@ fn dispatch_command(
             memory_store::run(ctx, global_options, memory_store_cmd)
         }
         CliCommand::Memory(memory_cmd) => memory_store::run_memory(ctx, global_options, memory_cmd),
-        CliCommand::Login => admin::login(ctx),
-        CliCommand::Logout => admin::logout(ctx),
+        CliCommand::Login | CliCommand::Logout => {
+            anyhow::bail!("Warp account commands are unavailable in the local terminal")
+        }
         CliCommand::Whoami => admin::whoami(ctx, global_options.output_format),
         CliCommand::Provider(provider_cmd) => {
             if !FeatureFlag::ProviderCommand.is_enabled() {

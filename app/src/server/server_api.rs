@@ -1516,14 +1516,6 @@ impl ServerApiProvider {
             event_receiver,
             move |_, event, ctx| {
                 match event {
-                    AuthEvent::UserAccountDisabled => {
-                        // We dispatch a global action here because the log out code requires
-                        // `server_api`, causing a circular model reference panic when it calls
-                        // `ServerApiProvider` to get access.
-                        // TODO: We should remove this pattern where `ServerApiProvider` responds
-                        // to events; it's prone to these sorts of circular reference issues.
-                        ctx.dispatch_global_action("app:log_out", ());
-                    }
                     AuthEvent::NeedsReauth => {
                         // AuthManager depends on a reference to ServerApi, so ServerApi can't easily
                         // hold a ref to AuthManager. To get around this, we emit an event on ServerApi
@@ -1545,10 +1537,7 @@ impl ServerApiProvider {
             |_, _| {},
         );
         let server_api = Arc::new(server_api);
-        #[cfg(feature = "local_terminal")]
         let auth_client = Arc::new(AuthClientImpl);
-        #[cfg(not(feature = "local_terminal"))]
-        let auth_client = Arc::new(AuthClientImpl::new(server_api.base_client.clone()));
         Self {
             server_api,
             auth_client,
@@ -1572,10 +1561,7 @@ impl ServerApiProvider {
     #[cfg(any(test, all(feature = "tui", feature = "test-util")))]
     pub fn new_for_test() -> Self {
         let server_api = Arc::new(ServerApi::new_for_test());
-        #[cfg(feature = "local_terminal")]
         let auth_client = Arc::new(AuthClientImpl);
-        #[cfg(not(feature = "local_terminal"))]
-        let auth_client = Arc::new(AuthClientImpl::new(server_api.base_client.clone()));
         Self {
             server_api,
             auth_client,

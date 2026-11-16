@@ -45,9 +45,8 @@ use warp::tui_export::{
     TuiUserInfoManager, TuiUserInfoManagerEvent, TuiZeroStateDataSource, UserTakeOverReason,
     UserWorkspaces, UserWorkspacesEvent, WAKEUP_THROTTLE_PERIOD, WarpConfig, WarpConfigUpdateEvent,
     block_context_from_terminal_model, build_slash_command_mixer, detect_possible_git_repo,
-    export_conversation_markdown, loaded_subtree_rollup, log_out_tui,
-    maybe_build_ai_query_upsert_event, prepare_conversation_block_restoration,
-    record_saved_prompt_accepted,
+    export_conversation_markdown, loaded_subtree_rollup, maybe_build_ai_query_upsert_event,
+    prepare_conversation_block_restoration, record_saved_prompt_accepted,
     record_static_slash_command_accepted, saved_prompt_text_for_id,
     slash_command_selection_behavior, throttle,
 };
@@ -3950,13 +3949,12 @@ impl TuiTerminalSessionView {
         ) {
             return;
         }
-        if self.send_terminal_use_prompt(&text, ctx) {
-            self.input_view
-                .update(ctx, |input, ctx| input.lock_for_agent_control(ctx));
-        } else if self.is_shell_mode(ctx) {
-            self.execute_user_command(&text, linked_workflow_data, ctx);
+        if let ParsedSlashCommandInput::SlashCommand(detected) =
+            self.slash_commands_source.as_ref(ctx).parse_input(&text, ctx)
+        {
+            self.execute_tui_slash_command(&detected.command, detected.argument.as_ref(), ctx);
         } else {
-            self.handle_submitted_input(&text, ctx);
+            self.execute_user_command(&text, linked_workflow_data, ctx);
         }
         ctx.notify();
     }
@@ -4721,10 +4719,6 @@ impl TuiTerminalSessionView {
             SlashCommandKind::Exit => {
                 record_static_slash_command_accepted(command.name, true, ctx);
                 ctx.terminate_app(TerminationMode::ForceTerminate, None);
-            }
-            SlashCommandKind::Logout => {
-                record_static_slash_command_accepted(command.name, true, ctx);
-                log_out_tui(ctx);
             }
             SlashCommandKind::ViewLogs => {
                 self.input_view.update(ctx, |input, ctx| input.clear(ctx));

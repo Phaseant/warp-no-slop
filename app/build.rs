@@ -216,12 +216,12 @@ fn generate_channel_config_if_needed(target_family: &str, target_os: &str) {
 }
 
 fn get_build_profile_name() -> String {
-    // The profile name is always the 3rd last part of the path (with 1 based indexing).
-    // e.g. /code/core/target/cli/build/my-build-info-9f91ba6f99d7a061/out
+    // Cargo can put the package name and hash in separate directories below build/.
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR must be set"));
     out_dir
         .ancestors()
-        .nth(3)
+        .find(|path| path.file_name().is_some_and(|name| name == "build"))
+        .and_then(Path::parent)
         .and_then(Path::file_name)
         .expect("could not get profile name")
         .to_string_lossy()

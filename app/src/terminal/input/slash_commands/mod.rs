@@ -50,7 +50,7 @@ use crate::search::slash_command_menu::static_commands::commands::COMMAND_REGIST
 use crate::search::slash_command_menu::static_commands::{Availability, SlashCommandKind};
 use crate::search::slash_command_menu::{SlashCommandId, StaticCommand};
 use crate::server::ids::SyncId;
-use crate::server::telemetry::{SlashCommandAcceptedDetails};
+use crate::server::telemetry::SlashCommandAcceptedDetails;
 use crate::settings::AISettings;
 use crate::tab::SelectedTabColor;
 use crate::terminal::input::inline_menu::{InlineMenuAction, InlineMenuType};
@@ -301,9 +301,7 @@ impl Input {
         // detected commands affect syntax highlighting.
         let new_state = self.slash_command_model.as_ref(ctx).state();
         if event.old_state.is_detected_command() != new_state.is_detected_command() {
-            let _ = self
-                .debounce_input_background_tx
-                .try_send(());
+            let _ = self.debounce_input_background_tx.try_send(());
         }
 
         match self.slash_command_model.as_ref(ctx).state().clone() {
@@ -1325,7 +1323,6 @@ impl Input {
             | SlashCommandKind::Theme
             | SlashCommandKind::VimMode
             | SlashCommandKind::Exit
-            | SlashCommandKind::Logout
             | SlashCommandKind::Clear
             | SlashCommandKind::Team
             | SlashCommandKind::Status => {

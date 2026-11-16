@@ -269,7 +269,6 @@ pub enum WorkspaceAction {
     SelectNewSessionMenuItem(NewSessionMenuItem),
     AutoupdateFailureLink,
     ApplyUpdate,
-    LogOut,
     CopyVersion(&'static str),
     DownloadNewVersion,
     ConfigureKeybindingSettings {
@@ -1129,7 +1128,6 @@ impl WorkspaceAction {
             | ShowHeaderToolbarContextMenu { .. }
             | Reauth
             | SignupAnonymousUser
-            | LogOut
             | OpenLink(_)
             | OpenShareSessionModal(_)
             | StopSharingSessionFromTabMenu { .. }

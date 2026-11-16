@@ -238,7 +238,7 @@ use crate::appearance::{Appearance, AppearanceManager};
 use crate::auth::AuthStateProvider;
 use crate::auth::auth_manager::{AuthManager, AuthManagerEvent};
 use crate::auth::auth_override_warning_modal::{
-    AuthOverrideWarningModal, AuthOverrideWarningModalEvent, AuthOverrideWarningModalVariant,
+    AuthOverrideWarningModal, AuthOverrideWarningModalEvent,
 };
 use crate::auth::auth_state::AuthState;
 use crate::auth::auth_view_modal::{AuthRedirectPayload, AuthView, AuthViewEvent, AuthViewVariant};
@@ -1844,33 +1844,6 @@ impl Workspace {
         (settings_pane, theme_chooser_view)
     }
 
-    #[cfg(not(feature = "local_terminal"))]
-    fn build_require_login_modal(ctx: &mut ViewContext<Self>) -> ViewHandle<AuthView> {
-        let require_login_modal = ctx.add_typed_action_view(|ctx| {
-            AuthView::new(AuthViewVariant::RequireLoginCloseable, ctx)
-        });
-        ctx.subscribe_to_view(&require_login_modal, move |me, _, event, ctx| {
-            me.handle_require_login_modal_event(event, ctx);
-        });
-
-        require_login_modal
-    }
-
-    #[cfg(not(feature = "local_terminal"))]
-    fn build_auth_override_warning_modal(
-        ctx: &mut ViewContext<Self>,
-    ) -> ViewHandle<AuthOverrideWarningModal> {
-        let auth_override_warning_modal = ctx.add_typed_action_view(|ctx| {
-            AuthOverrideWarningModal::new(ctx, AuthOverrideWarningModalVariant::WorkspaceModal)
-        });
-
-        ctx.subscribe_to_view(&auth_override_warning_modal, |me, _, event, ctx| {
-            me.handle_auth_override_warning_modal_event(event, ctx);
-        });
-
-        auth_override_warning_modal
-    }
-
     fn handle_auth_override_warning_modal_event(
         &mut self,
         event: &AuthOverrideWarningModalEvent,
@@ -3045,14 +3018,7 @@ impl Workspace {
             },
         );
 
-        #[cfg(not(feature = "local_terminal"))]
-        let require_login_modal = Some(Self::build_require_login_modal(ctx));
-        #[cfg(feature = "local_terminal")]
         let require_login_modal = None;
-
-        #[cfg(not(feature = "local_terminal"))]
-        let auth_override_warning_modal = Some(Self::build_auth_override_warning_modal(ctx));
-        #[cfg(feature = "local_terminal")]
         let auth_override_warning_modal = None;
 
         let workflow_modal = Self::build_workflow_modal(ai_client.clone(), ctx);
@@ -10180,13 +10146,6 @@ impl Workspace {
                 .into_item(),
         );
 
-        if !self.auth_state.is_anonymous_or_logged_out() {
-            items.push(
-                MenuItemFields::new("Log out")
-                    .with_on_select_action(WorkspaceAction::LogOut)
-                    .into_item(),
-            );
-        }
         items
     }
 
@@ -24740,11 +24699,6 @@ impl TypedActionView for Workspace {
             }
             AutoupdateFailureLink => self.open_autoupdate_failure_link(ctx),
             ApplyUpdate => self.apply_update(ctx),
-            LogOut => {
-                // Need to dispatch global action, or else we will not be able to retrieve
-                // the currently active session in the log out modal.
-                ctx.dispatch_global_action("app:maybe_log_out", ());
-            }
             ExportAllWarpDriveObjects => {
                 self.export_all_warp_drive_objects(ctx);
             }

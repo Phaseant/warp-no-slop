@@ -48,9 +48,10 @@ use crate::ai::onboarding::{
 use crate::ai::request_usage_model::AIRequestUsageModelEvent;
 use crate::app_state::{AppState, PaneUuid, WindowSnapshot};
 use crate::appearance::Appearance;
+use crate::auth::AuthStateProvider;
 use crate::auth::auth_manager::{AuthManager, AuthManagerEvent};
 use crate::auth::auth_override_warning_modal::{
-    AuthOverrideWarningModal, AuthOverrideWarningModalEvent, AuthOverrideWarningModalVariant,
+    AuthOverrideWarningModal, AuthOverrideWarningModalEvent,
 };
 use crate::auth::auth_state::AuthState;
 use crate::auth::auth_view_modal::{AuthRedirectPayload, AuthView, AuthViewVariant};
@@ -59,7 +60,6 @@ use crate::auth::needs_sso_link_view::NeedsSsoLinkView;
 use crate::auth::paste_auth_token_modal::{PasteAuthTokenModalEvent, PasteAuthTokenModalView};
 #[cfg(target_family = "wasm")]
 use crate::auth::web_handoff::{WebHandoffEvent, WebHandoffView};
-use crate::auth::{AuthStateProvider, LoginFailureReason};
 use crate::autoupdate::{AutoupdateState, AutoupdateStateEvent, RequestType, UpdateReady};
 use crate::changelog_model::ChangelogRequestType;
 use crate::cloud_object::model::persistence::CloudModel;
@@ -1897,40 +1897,7 @@ impl RootView {
         });
         let server_api_provider = ServerApiProvider::as_ref(ctx);
         let server_api = server_api_provider.get();
-        let auth_state = AuthStateProvider::as_ref(ctx).get().clone();
 
-        #[cfg(not(feature = "local_terminal"))]
-        let (auth_view, auth_override_view, needs_sso_link_view) = {
-            ctx.subscribe_to_model(&AuthManager::handle(ctx), |me, _, event, ctx| {
-                me.handle_auth_manager_event(event, ctx);
-            });
-
-            ctx.subscribe_to_model(&CloudPreferencesSyncer::handle(ctx), |me, _, event, ctx| {
-                me.handle_cloud_preferences_syncer_event(event, ctx);
-            });
-
-            ctx.subscribe_to_model(&UserWorkspaces::handle(ctx), |me, _, event, ctx| {
-                me.handle_account_first_workspaces_event(event, ctx);
-            });
-
-            let auth_view =
-                ctx.add_typed_action_view(|ctx| AuthView::new(AuthViewVariant::Initial, ctx));
-
-            let auth_override_view: ViewHandle<_> = ctx.add_typed_action_view(|ctx| {
-                AuthOverrideWarningModal::new(ctx, AuthOverrideWarningModalVariant::OnboardingView)
-            });
-
-            ctx.subscribe_to_view(&auth_override_view, |me, _, event, ctx| {
-                me.handle_auth_override_warning_modal_event(event, ctx);
-            });
-            let needs_sso_link_view = ctx.add_typed_action_view(|_| NeedsSsoLinkView::new());
-            (
-                Some(auth_view),
-                Some(auth_override_view),
-                Some(needs_sso_link_view),
-            )
-        };
-        #[cfg(feature = "local_terminal")]
         let (auth_view, auth_override_view, needs_sso_link_view) = (None, None, None);
 
         let model_event_sender = global_resource_handles.model_event_sender.clone();
@@ -1940,43 +1907,8 @@ impl RootView {
             workspace_setting,
         };
 
-        let auth_onboarding_state = if cfg!(feature = "local_terminal")
-            || auth_state.is_local_session()
-            || auth_state.is_logged_in()
-        {
-            AuthOnboardingState::Terminal(workspace_args.create_workspace(ctx))
-        } else {
-            cfg_if! {
-                if #[cfg(target_family = "wasm")] {
-                    AuthOnboardingState::WebImport(AuthOnboardingTarget::Workspace(workspace_args.into()))
-                } else {
-
-                    if FeatureFlag::ForceLogin.is_enabled() {
-                        // ForceLogin is true for Preview
-                        AuthOnboardingState::Auth(workspace_args.into())
-                    } else if FeatureFlag::AgentOnboarding.is_enabled()
-                        && !has_completed_local_onboarding(ctx)
-                        && !workspace_args.workspace_setting.is_content_deep_link()
-                    {
-                        let workspace_args_box: Box<WorkspaceArgs> = workspace_args.into();
-                        let onboarding_view = Self::create_agent_onboarding_view(ctx);
-                        onboarding_view.update(ctx, |view, ctx| {
-                            view.start_onboarding(ctx);
-                        });
-                        AuthOnboardingState::Onboarding {
-                            onboarding_view,
-                            target: AuthOnboardingTarget::Workspace(workspace_args_box),
-                        }
-                    } else if FeatureFlag::SkipFirebaseAnonymousUser.is_enabled() {
-                        // When SkipFirebaseAnonymousUser is enabled, skip the login screen
-                        // entirely and go directly into the workspace.
-                        AuthOnboardingState::Terminal(workspace_args.create_workspace(ctx))
-                    } else {
-                        AuthOnboardingState::Auth(workspace_args.into())
-                    }
-                }
-            }
-        };
+        let auth_onboarding_state =
+            AuthOnboardingState::Terminal(workspace_args.create_workspace(ctx));
 
         #[cfg(target_family = "wasm")]
         let web_handoff_view = {
@@ -3070,35 +3002,6 @@ impl RootView {
 
     #[allow(clippy::ptr_arg)]
     fn handle_incoming_auth_url(&mut self, url: &Url, ctx: &mut ViewContext<Self>) -> bool {
-        if cfg!(feature = "local_terminal")
-            || AuthStateProvider::as_ref(ctx).get().is_local_session()
-        {
-            return true;
-        }
-
-        match AuthRedirectPayload::from_url(url.clone()) {
-            Ok(redirect_payload) => {
-                AuthManager::handle(ctx).update(ctx, |auth_manager, ctx| {
-                    auth_manager.initialize_user_from_auth_payload(redirect_payload, true, ctx);
-                });
-            }
-            Err(error) => {
-                safe_error!(
-                    safe: ("Unable to parse AuthResult from url"),
-                    full: ("Unable to parse AuthResult from url: {error}")
-                );
-                if let Some(auth_view) = &self.auth_view {
-                    auth_view.update(ctx, |view, ctx| {
-                        view.last_login_failure_reason =
-                            Some(LoginFailureReason::InvalidRedirectUrl { was_pasted: false });
-                        ctx.notify()
-                    });
-                }
-            }
-        }
-        // The web checkout confirmation hands the user back through the same
-        // desktop redirect it uses for auth, so the success flag rides along on
-        // a URL that may also have failed to parse as an auth payload.
         if url_reports_checkout_success(url) {
             self.notify_onboarding_checkout_succeeded(ctx);
         }
@@ -3681,17 +3584,8 @@ impl RootView {
                     self.web_handoff(ctx);
                 }
                 UserAuthenticationError::UserAccountDisabled(_) => {
-                    cfg_if! {
-                        if #[cfg(target_family = "wasm")] {
-                            // On the web, replace the invalid account with the one from the host
-                            // application, which ought to be valid.
-                            self.web_handoff(ctx);
-                        } else {
-                            // On native, force sign them out, as they should not be able to continue
-                            // to use Warp. Instead, they can sign in or up with a valid account.
-                            crate::auth::log_out(ctx);
-                        }
-                    }
+                    #[cfg(target_family = "wasm")]
+                    self.web_handoff(ctx);
                 }
                 UserAuthenticationError::Unexpected(_) => {
                     report_error!(err);

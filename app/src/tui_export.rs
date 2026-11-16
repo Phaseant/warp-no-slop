@@ -219,10 +219,9 @@ pub use crate::terminal::input::slash_commands::{
     AcceptSlashCommandOrSavedPrompt, InlineItem, SlashCommandDataSource, SlashCommandMixer,
     SlashCommandSelectionBehavior, TuiDataSourceArgs as TuiSlashCommandDataSourceArgs,
     TuiSlashCommandDataSource, TuiZeroStateDataSource, UpdatedActiveCommands,
-    build_slash_command_mixer,
-    record_saved_prompt_accepted, record_static_slash_command_accepted, saved_prompt_text_for_id,
-    should_close_slash_command_menu_for_exact_match, slash_command_is_submitted_as_prompt,
-    slash_command_query, slash_command_selection_behavior,
+    build_slash_command_mixer, record_saved_prompt_accepted, record_static_slash_command_accepted,
+    saved_prompt_text_for_id, should_close_slash_command_menu_for_exact_match,
+    slash_command_is_submitted_as_prompt, slash_command_query, slash_command_selection_behavior,
 };
 pub use crate::terminal::local_tty::{
     TerminalManager as LocalTtyTerminalManager, TerminalManagerInit, TerminalSurfaceInit,
@@ -259,7 +258,7 @@ pub use crate::tui::{
     TuiMcpManager, TuiMcpManagerEvent, TuiMcpServerId, TuiMcpServerSnapshot, TuiMcpServerSource,
     TuiMcpServerStatus, TuiMcpSnapshot, TuiMcpSyncedTemplateProvenance, TuiMcpTemplateVariable,
     TuiMcpTransport, TuiMcpVariableValue, TuiUserInfoManager, TuiUserInfoManagerEvent,
-    TuiUserInfoSnapshot, log_out_tui,
+    TuiUserInfoSnapshot,
 };
 pub use crate::tui_onboarding_markers::{
     TuiOnboardingMarker, TuiOnboardingMarkers, TuiOnboardingMarkersEvent,
@@ -314,7 +313,6 @@ pub fn tui_completion_session_context(
         app,
     ))
 }
-
 
 /// Returns whether cloud conversation metadata failed to load.
 pub fn agent_conversations_cloud_metadata_load_failed(app: &warpui::AppContext) -> bool {

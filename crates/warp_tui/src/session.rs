@@ -2,8 +2,7 @@
 //!
 //! [`run`] boots the real headless Warp app via [`warp::run_tui`]. Once shared
 //! initialization is done, the mount built here starts the TUI driver and
-//! creates the first terminal session once browser authentication starts, while
-//! allowing authentication to complete in the background.
+//! creates the first local terminal session.
 
 use std::io::{self, IsTerminal as _, Read as _};
 use std::path::PathBuf;
@@ -22,7 +21,6 @@ use warp::tui_export::{
     AIConversationAutoexecuteMode, Appearance, AuthStateProvider, FactoryGitTokenResponse,
     ServerApiProvider, ServerConversationToken, authenticate_then_execute,
 };
-use warp::{TuiLoginEvent, TuiLoginModel, TuiLoginPhase};
 use warp_core::channel::ChannelState;
 use warp_core::settings::Setting as _;
 use warp_core::telemetry::TelemetryEvent as _;
@@ -33,7 +31,6 @@ use warpui_core::runtime::{TuiDriverStartupError, TuiFocusPolicy, spawn_tui_driv
 use warpui_core::{AddWindowOptions, AppContext, ModelHandle, ViewHandle};
 use warpui_extras::secure_storage::AppContextExt as _;
 
-use crate::clipboard::copy_to_clipboard;
 use crate::orchestration_model::TuiOrchestrationModel;
 use crate::resume::TuiExitSummaryHandle;
 use crate::root_view::RootTuiView;
@@ -316,20 +313,18 @@ pub fn run() -> Result<()> {
             }
         }));
     }
-    let resume_token = args.resume.map(parse_resume_token).transpose()?;
-    let default_autoexecute_mode = if args.auto_approve {
-        AIConversationAutoexecuteMode::RunToCompletion
-    } else {
-        AIConversationAutoexecuteMode::RespectUserSettings
-    };
+    anyhow::ensure!(
+        args.resume.is_none() && !args.auto_approve,
+        "Warp agent options are unavailable in the local terminal"
+    );
     let exit_summary = TuiExitSummaryHandle::default();
     let exit_summary_for_app = exit_summary.clone();
     let result = warp::run_tui(
         args.api_key,
         Box::new(move |ctx| {
             init(
-                resume_token,
-                default_autoexecute_mode,
+                None,
+                AIConversationAutoexecuteMode::RespectUserSettings,
                 exit_summary_for_app,
                 ctx,
             )
@@ -442,27 +437,7 @@ fn init(
             });
             let orchestration = TuiOrchestrationModel::register(ctx);
             TuiSessions::wire_orchestration(&sessions, &orchestration, ctx);
-            let sessions_for_login = sessions.clone();
-            let root_for_login = root.clone();
-            let login_model = TuiLoginModel::handle(ctx);
-            ctx.subscribe_to_model(&login_model, move |_, event, ctx| match event {
-                TuiLoginEvent::PhaseChanged => {
-                    root_for_login.update(ctx, |root, ctx| {
-                        root.handle_login_phase_changed(ctx, copy_to_clipboard);
-                    });
-                }
-                TuiLoginEvent::LoggedIn => {
-                    ensure_terminal_session(&sessions_for_login, &root_for_login, ctx)
-                }
-                TuiLoginEvent::LoggedOut => {
-                    root_for_login.update(ctx, |root, ctx| root.show_auth(ctx));
-                    sessions_for_login.update(ctx, |sessions, ctx| sessions.clear(ctx));
-                }
-            });
-            if matches!(TuiLoginModel::as_ref(ctx).phase(), TuiLoginPhase::LoggedIn) {
-                // Already authenticated at mount: create the first session now.
-                ensure_terminal_session(&sessions, &root, ctx);
-            }
+            ensure_terminal_session(&sessions, &root, ctx);
         }
         Err(error) => handle_tui_driver_startup_error(error, ctx),
     }
@@ -503,9 +478,6 @@ fn ensure_terminal_session(
         std::env::current_dir().ok(),
         ctx,
     );
-    surface.update(ctx, |view, ctx| {
-        view.enable_cli_agent_osc_event_publishing(ctx);
-    });
     if let Some(token) = resume_token {
         surface.update(ctx, |view, ctx| {
             view.restore_conversation(
@@ -515,8 +487,6 @@ fn ensure_terminal_session(
             );
         });
     }
-    root.update(ctx, |root, ctx| root.show_terminal(ctx));
-    TuiLoginModel::record_terminal_shown(ctx);
 }
 
 #[cfg(test)]

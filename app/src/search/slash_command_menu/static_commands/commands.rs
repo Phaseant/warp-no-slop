@@ -180,16 +180,6 @@ pub const STATUS: StaticCommand = StaticCommand {
     argument: None,
 };
 
-pub const LOGOUT: StaticCommand = StaticCommand {
-    name: "/logout",
-    description: "Log out of Warp",
-    kind: SlashCommandKind::Logout,
-    supported_surfaces: SlashCommandSurfaces::TuiOnly,
-    availability: Availability::ALWAYS,
-    auto_enter_ai_mode: false,
-    argument: None,
-};
-
 pub static CREATE_ENVIRONMENT: LazyLock<StaticCommand> = LazyLock::new(|| StaticCommand {
     name: "/create-environment",
     description: "Create an Oz environment (Docker image + repos) via guided setup",
@@ -914,7 +904,17 @@ impl Default for Registry {
 impl Registry {
     pub fn new() -> Self {
         let mut commands = HashMap::new();
-        for command in all_commands_for_all_surfaces() {
+        for command in [
+            EXIT,
+            OPEN_SETTINGS_FILE,
+            RENAME_TAB.clone(),
+            RESET_STATUSLINE,
+            SET_TAB_COLOR.clone(),
+            STATUSLINE,
+            THEME,
+            VIEW_LOGS,
+            VIM_MODE,
+        ] {
             debug_assert!(
                 !command
                     .availability
@@ -960,6 +960,7 @@ fn all_commands(settings_mode: settings::SettingsMode) -> Vec<StaticCommand> {
         .collect()
 }
 
+#[cfg(test)]
 fn all_commands_for_all_surfaces() -> Vec<StaticCommand> {
     let mut commands = vec![
         ADD_MCP,
@@ -975,7 +976,6 @@ fn all_commands_for_all_surfaces() -> Vec<StaticCommand> {
         CONNECT_GROK,
         UPGRADE,
         MANAGE_BILLING,
-        LOGOUT,
         MCP,
         OPEN_PROJECT_RULES,
         OPEN_MCP_SERVERS,

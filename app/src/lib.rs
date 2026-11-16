@@ -318,8 +318,6 @@ use crate::terminal::keys::TerminalKeybindings;
 use crate::terminal::resizable_data::ResizableData;
 use crate::terminal::view::inline_banner::ByoLlmAuthBannerSessionState;
 use crate::terminal::{AudibleBell, CustomSecretRegexUpdater, History};
-#[cfg(feature = "tui")]
-pub use crate::tui::{TuiLoginEvent, TuiLoginModel, TuiLoginPhase, log_out_tui};
 use crate::undo_close::UndoCloseStack;
 use crate::user_config::WarpConfig;
 use crate::util::bindings::is_binding_cross_platform;
@@ -441,12 +439,6 @@ enum TuiEntryPoint {
     },
 }
 
-enum AuthInitialization {
-    LocalSession,
-    Persisted,
-    PendingApiKey(String),
-}
-
 impl LaunchMode {
     /// Sets command-line launch flags so standby uses sandbox initialization without a run prompt.
     #[cfg(any(not(feature = "local_terminal"), test))]
@@ -475,35 +467,6 @@ impl LaunchMode {
             | LaunchMode::RemoteServerProxy
             | LaunchMode::RemoteServerDaemon { .. }
             | LaunchMode::Tui { .. } => Cow::Owned(warp_cli::AppArgs::default()),
-        }
-    }
-
-    fn api_key(&self) -> Option<String> {
-        match self {
-            LaunchMode::CommandLine { global_options, .. } => global_options.api_key.clone(),
-            LaunchMode::App { api_key, .. }
-            | LaunchMode::Tui {
-                entrypoint: TuiEntryPoint::Interactive { api_key, .. },
-            } => api_key.clone(),
-            LaunchMode::Test { .. }
-            | LaunchMode::RemoteServerProxy
-            | LaunchMode::RemoteServerDaemon { .. }
-            | LaunchMode::Tui {
-                entrypoint: TuiEntryPoint::CliCommand { .. },
-            } => None,
-        }
-    }
-
-    fn auth_initialization(&self) -> AuthInitialization {
-        if cfg!(feature = "local_terminal")
-            || (cfg!(not(target_family = "wasm")) && matches!(self, Self::App { .. }))
-        {
-            return AuthInitialization::LocalSession;
-        }
-
-        match self.api_key() {
-            Some(api_key) => AuthInitialization::PendingApiKey(api_key),
-            None => AuthInitialization::Persisted,
         }
     }
 
@@ -840,32 +803,8 @@ pub fn run() -> Result<()> {
             warp_cli::Command::Completions { shell } => {
                 return warp_cli::completions::generate_to_stdout(*shell);
             }
-            #[cfg(feature = "local_terminal")]
             warp_cli::Command::CommandLine(_) => {
-                return Err(anyhow!(
-                    "Oz and Warp account commands are unavailable in the local terminal"
-                ));
-            }
-            #[cfg(not(feature = "local_terminal"))]
-            warp_cli::Command::CommandLine(cmd) => {
-                #[cfg(not(target_family = "wasm"))]
-                if let CliCommand::EnvironmentCheckout(args) = cmd.as_ref() {
-                    let (mut tracing_initialization, parent_context) =
-                        tracing::init_child_process(&args.requests_file)?;
-                    let _parent_context = parent_context.attach();
-                    warp_logging::init(warp_logging::LogConfig {
-                        frontend: warp_logging::LogFrontend::Cli,
-                        log_destination: Some(warp_logging::LogDestination::Stderr),
-                        ..Default::default()
-                    })?;
-                    tracing_initialization.log_initialization_warning();
-                    return ai::agent_sdk::run_environment_checkout(args);
-                }
-                return run_internal(LaunchMode::command_line(
-                    cmd.as_ref().clone(),
-                    args.global_options().clone(),
-                    args.debug(),
-                ));
+                anyhow::bail!("Oz and Warp account commands are unavailable in the local terminal");
             }
             warp_cli::Command::DumpDebugInfo => {
                 return debug_dump::run();
@@ -916,37 +855,6 @@ fn run_worker_command(worker: &warp_cli::WorkerCommand) -> Result<()> {
                     panic!("The minidump server is not supported on this platform");
                 }
             }
-        }
-        #[cfg(not(target_family = "wasm"))]
-        warp_cli::WorkerCommand::RemoteServerProxy(args) => {
-            // Proxy is a thin byte bridge (stdin/stdout ↔ Unix socket).
-            // It only needs logging to stderr since stdout is the protocol
-            // channel. No crash reporting, no initialize_app.
-            let launch_mode = LaunchMode::RemoteServerProxy;
-            let mut tracing_initialization = tracing::init()?;
-            warp_logging::init(warp_logging::LogConfig {
-                frontend: launch_mode.log_frontend(),
-                log_destination: launch_mode.log_destination(),
-                ..Default::default()
-            })?;
-            tracing_initialization.log_initialization_warning();
-            crate::remote_server::run_proxy(args.identity_key.clone())
-        }
-        #[cfg(not(target_family = "wasm"))]
-        warp_cli::WorkerCommand::RemoteServerDaemon(args) => {
-            // Daemon handles its own full initialization (including
-            // initialize_app and crash reporting) inside run_daemon_app.
-            crate::remote_server::run_daemon(args.identity_key.clone())
-        }
-        #[cfg(all(not(target_family = "wasm"), feature = "local_terminal"))]
-        warp_cli::WorkerCommand::AcpBridge { .. } => Err(anyhow!(
-            "Agent workers are unavailable in the local terminal"
-        )),
-        #[cfg(all(not(target_family = "wasm"), not(feature = "local_terminal")))]
-        warp_cli::WorkerCommand::AcpBridge { launch_file } => {
-            // Stdout belongs to the agent's protocol stream, so there is no logging and no
-            // initialize_app.
-            crate::ai::agent_sdk::driver::harness::acp::run_bridge(launch_file)
         }
         #[cfg(not(target_family = "wasm"))]
         warp_cli::WorkerCommand::RipgrepSearch {
@@ -1406,10 +1314,7 @@ fn run_internal(mut launch_mode: LaunchMode) -> Result<()> {
             FeatureFlag::UseTantivySearch.set_enabled(true);
         }
 
-        // The TUI front-end reuses the full `initialize_app` bootstrap above (so
-        // auth, `Appearance`, settings, etc. exist), then runs the device-login
-        // flow and mounts the TUI (via `crate::tui::init`) instead of the
-        // GUI/CLI `launch()` path.
+        // The TUI uses the shared bootstrap and mounts its own root view.
         match launch_mode {
             #[cfg(feature = "tui")]
             LaunchMode::Tui { entrypoint } => match entrypoint {
@@ -1429,92 +1334,6 @@ pub struct UpdateQuakeModeEventArg {
     active_window_id: Option<WindowId>,
 }
 
-#[derive(Clone)]
-enum StartupUserAuthentication {
-    RefreshUser,
-    ApiKey(String),
-}
-
-impl StartupUserAuthentication {
-    fn start(self, ctx: &mut AppContext) {
-        AuthManager::handle(ctx).update(ctx, |auth_manager, ctx| match self {
-            Self::RefreshUser => auth_manager.refresh_user(ctx),
-            Self::ApiKey(api_key) => auth_manager.authenticate_api_key(api_key, ctx),
-        });
-    }
-}
-
-/// Whether startup user authentication should proceed without blocking on IAP.
-///
-/// The TUI front-end must not stall its startup waiting for a staging IAP token
-/// the server may not even require, so it authenticates immediately and lets IAP
-/// resolve out of band (see [`authenticate_user_after_iap_access`]). Every other
-/// front-end keeps the blocking behavior. IAP config only exists on staging
-/// builds, so this never affects production.
-fn startup_auth_is_non_blocking(launch_mode: &LaunchMode) -> bool {
-    matches!(launch_mode, LaunchMode::Tui { .. })
-}
-
-fn authenticate_user_after_iap_access(
-    authentication: StartupUserAuthentication,
-    non_blocking: bool,
-    ctx: &mut AppContext,
-) {
-    let iap_manager = IapManager::handle(ctx);
-    if !iap_manager.as_ref(ctx).is_enabled() || iap_manager.as_ref(ctx).has_valid_token() {
-        authentication.start(ctx);
-        return;
-    }
-
-    if non_blocking {
-        // Don't stall startup waiting for an IAP token the server may not even
-        // require. Authenticate immediately; if the server DOES enforce IAP, this
-        // first attempt hits an IAP challenge, which notifies `IapManager` to mint
-        // a token (`observe_iap_challenge` -> `handle_challenge`). Once a valid
-        // token lands we retry auth so login still recovers — unless the
-        // optimistic attempt already established a session.
-        authentication.clone().start(ctx);
-        let mut pending_authentication = Some(authentication);
-        ctx.subscribe_to_model(&iap_manager, move |iap_manager, event, ctx| match event {
-            IapManagerEvent::StateChanged => {
-                if !iap_manager.as_ref(ctx).has_valid_token() {
-                    return;
-                }
-                if AuthStateProvider::as_ref(ctx).get().user_id().is_some() {
-                    pending_authentication = None;
-                    return;
-                }
-                if let Some(authentication) = pending_authentication.take() {
-                    authentication.start(ctx);
-                }
-            }
-            IapManagerEvent::AccessUnavailable | IapManagerEvent::RefreshFailed { .. } => {}
-        });
-        iap_manager.update(ctx, |manager, ctx| manager.ensure_access(ctx));
-        return;
-    }
-
-    let mut pending_authentication = Some(authentication);
-    ctx.subscribe_to_model(&iap_manager, move |iap_manager, event, ctx| match event {
-        IapManagerEvent::StateChanged => {
-            if !iap_manager.as_ref(ctx).has_valid_token() {
-                return;
-            }
-            if let Some(authentication) = pending_authentication.take() {
-                authentication.start(ctx);
-            }
-        }
-        IapManagerEvent::AccessUnavailable => {
-            report_error!("Staging IAP access unavailable before startup user authentication");
-        }
-        IapManagerEvent::RefreshFailed {
-            message: _,
-            is_first_failure_of_streak: _,
-        } => {}
-    });
-    iap_manager.update(ctx, |manager, ctx| manager.ensure_access(ctx));
-}
-
 #[::tracing::instrument(skip_all, fields(tags.cloud_agent = true))]
 pub(crate) fn initialize_app(
     launch_mode: &LaunchMode,
@@ -1530,8 +1349,8 @@ pub(crate) fn initialize_app(
     let secure_storage_service_name = launch_mode.secure_storage_service_name(&data_domain);
 
     // Daemon auth arrives through the client handshake, so avoid platform keychains that may
-    // require an interactive unlock prompt. Other headless modes still use secure storage for
-    // persisted login and BYO provider credentials.
+    // require an interactive unlock prompt. Other headless modes use secure storage for
+    // provider credentials.
     if matches!(launch_mode, LaunchMode::RemoteServerDaemon { .. }) {
         warpui_extras::secure_storage::register_unavailable(ctx);
     } else {
@@ -1568,16 +1387,7 @@ pub(crate) fn initialize_app(
         ctx.set_zoom_factor(WindowSettings::as_ref(ctx).zoom_level.as_zoom_factor());
     }
 
-    let (auth_state, pending_api_key) = match launch_mode.auth_initialization() {
-        AuthInitialization::LocalSession => (AuthState::new_local_session(ctx), None),
-        AuthInitialization::Persisted => (AuthState::initialize(ctx), None),
-        AuthInitialization::PendingApiKey(api_key) => (
-            AuthState::initialize_for_credential_validation(ctx),
-            Some(api_key),
-        ),
-    };
-    let auth_state = Arc::new(auth_state);
-    timer.mark_interval_end("AUTH_MANAGER_SET_USER");
+    let auth_state = Arc::new(AuthState::new_local_session(ctx));
 
     let agent_source = determine_agent_source(launch_mode);
 
@@ -1651,27 +1461,10 @@ pub(crate) fn initialize_app(
         }
     }
     let ai_client = server_api_provider.as_ref(ctx).get_ai_client();
-    #[cfg(all(not(target_family = "wasm"), not(feature = "local_terminal")))]
-    // Refresh starts only after the authenticated server client exists; tracing initialization
-    // remains responsible for deciding whether this process opted in to cloud-agent export.
-    tracing::start_auth_refresh(
-        server_api_provider.as_ref(ctx).get_managed_secrets_client(),
-        ctx,
-    );
-
     ctx.add_singleton_model(|_ctx| AuthStateProvider::new(auth_state.clone()));
 
     ctx.add_singleton_model(AppTelemetryContextProvider::new_context_provider);
 
-    #[cfg(not(feature = "local_terminal"))]
-    ctx.add_singleton_model(|ctx| {
-        AuthManager::new(
-            server_api.clone(),
-            server_api_provider.as_ref(ctx).get_auth_client(),
-            ctx,
-        )
-    });
-    #[cfg(feature = "local_terminal")]
     ctx.add_singleton_model(|_| AuthManager);
 
     ctx.add_singleton_model(|_ctx| GPUState::new());
@@ -2207,8 +2000,6 @@ pub(crate) fn initialize_app(
     themes::theme_deletion_modal::init(ctx);
     root_view::init(ctx);
     voltron::init(ctx);
-    #[cfg(not(feature = "local_terminal"))]
-    auth::init(ctx);
     reward_view::init(ctx);
     crate::view_components::find::init(ctx);
     prompt::editor_modal::init(ctx);
@@ -2568,31 +2359,6 @@ pub(crate) fn initialize_app(
         };
     });
 
-    let startup_authentication = match launch_mode {
-        // CLI commands establish IAP access and refresh auth in their dispatch path so they can
-        // surface failures synchronously. Other interactive clients gate startup user authentication
-        // on IAP here, since the request itself calls the IAP-gated warp-server — except the TUI,
-        // which authenticates immediately and resolves IAP out of band (see
-        // `startup_auth_is_non_blocking`).
-        LaunchMode::CommandLine { .. } => None,
-        // Login-required TUI commands subscribe before starting authentication in their dispatch path.
-        LaunchMode::Tui {
-            entrypoint: TuiEntryPoint::CliCommand { .. },
-        } => None,
-        _ => pending_api_key
-            .map(StartupUserAuthentication::ApiKey)
-            .or_else(|| user_is_logged_in.then_some(StartupUserAuthentication::RefreshUser)),
-    };
-    if !cfg!(feature = "local_terminal")
-        && let Some(authentication) = startup_authentication
-    {
-        authenticate_user_after_iap_access(
-            authentication,
-            startup_auth_is_non_blocking(launch_mode),
-            ctx,
-        );
-    }
-
     // Add a singleton model that holds the current prompt configuration.
     ctx.add_singleton_model(Prompt::new);
 
@@ -2722,7 +2488,6 @@ pub(crate) fn initialize_app(
         )
     });
     ctx.add_singleton_model(move |_| persistence_writer);
-
 
     ctx.add_singleton_model(move |_| IgnoredSuggestionsModel::new(persisted_ignored_suggestions));
 

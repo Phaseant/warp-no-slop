@@ -202,7 +202,7 @@ use super::model::secrets::RichContentSecretTooltipInfo;
 use super::model::selection::ExpandedSelectionRange;
 use super::model::session::SessionBootstrappedEvent;
 use super::settings::AltScreenPaddingMode;
-use super::ssh::util::{InteractiveSshCommand, SshWarpifyCommand, parse_interactive_ssh_command};
+use super::ssh::util::{InteractiveSshCommand, SshWarpifyCommand};
 use super::warpify::WarpificationSource;
 use super::warpify::success_block::{WarpifySuccessBlock, WarpifySuccessBlockEvent};
 use super::warpify::trigger_state::{SshBlockState, WarpifyState};
@@ -12891,12 +12891,10 @@ impl TerminalView {
                 let warpify_command = expanded_command.as_deref().unwrap_or(command.as_str());
 
                 // Check if the current running command spawns a subshell eligible for Warpification.
-                let shell_family = self.shell_family(ctx);
                 let warpify_settings = WarpifySettings::as_ref(ctx);
                 let is_compatible_subshell_command = warpify_settings
-                    .is_compatible_subshell_command(command, shell_family)
-                    || warpify_settings
-                        .is_compatible_subshell_command(warpify_command, shell_family);
+                    .is_compatible_subshell_command(command)
+                    || warpify_settings.is_compatible_subshell_command(warpify_command);
                 let command_is_denylisted = warpify_settings
                     .is_denylisted_subshell_command(command)
                     || warpify_settings.is_denylisted_subshell_command(warpify_command);
@@ -12947,98 +12945,86 @@ impl TerminalView {
                     }
                 } else {
                     if !has_ai_metadata {
-                        if let Some(ssh_host) =
-                            parse_interactive_ssh_command(warpify_command).map(|cmd| cmd.host)
-                        {
-                            self.warpify_state
-                                .set_pending_ssh_host(warpify_command.to_string(), ssh_host);
-                            self.model.lock().start_notify_on_end_of_ssh_login();
-                            ctx.emit(Event::TerminalViewStateChanged);
-                        } else {
-                            self.warpify_state.clear_pending_ssh_host();
+                        self.warpify_state.clear_pending_ssh_host();
 
-                            ctx.spawn(
-                                Timer::after(Duration::from_millis(
-                                    LONG_RUNNING_COMMAND_DURATION_MS,
-                                )),
-                                move |me, _, ctx| {
-                                    // Detect CLI agent and create session before
-                                    // showing the footer, so the session drives
-                                    // the footer rather than the other way around.
-                                    let detection = {
-                                        let model = me.model.lock();
-                                        me.detect_cli_agent_from_model(&model, ctx)
-                                    };
-                                    let view_id = me.view_id;
-                                    CLIAgentSessionsModel::handle(ctx).update(
-                                        ctx,
-                                        |sessions_model, ctx| match detection {
-                                            Some((agent, ref custom_command_prefix))
-                                                if !sessions_model
-                                                    .session(view_id)
-                                                    .is_some_and(|s| s.agent == agent) =>
-                                            {
-                                                let remote_host =
-                                                    me.active_session_remote_host(ctx);
-                                                let should_auto_toggle_input = agent
-                                                    .supports_cli_agent_footer()
-                                                    && *AISettings::as_ref(ctx)
-                                                        .auto_open_rich_input_on_cli_agent_start;
-                                                sessions_model.set_session(
-                                                    view_id,
-                                                    CLIAgentSession {
-                                                        agent,
-                                                        status: CLIAgentSessionStatus::InProgress,
-                                                        session_context:
-                                                            CLIAgentSessionContext::default(),
-                                                        input_state: CLIAgentInputState::Closed,
-                                                        should_auto_toggle_input,
-                                                        listener: None,
-                                                        plugin_version: None,
-                                                        remote_host,
-                                                        draft_text: None,
-                                                        custom_command_prefix:
-                                                            custom_command_prefix.clone(),
-                                                        received_rich_notification: false,
-                                                    },
-                                                    ctx,
-                                                );
-                                            }
-                                            _ => {}
-                                        },
+                        ctx.spawn(
+                            Timer::after(Duration::from_millis(LONG_RUNNING_COMMAND_DURATION_MS)),
+                            move |me, _, ctx| {
+                                // Detect CLI agent and create session before
+                                // showing the footer, so the session drives
+                                // the footer rather than the other way around.
+                                let detection = {
+                                    let model = me.model.lock();
+                                    me.detect_cli_agent_from_model(&model, ctx)
+                                };
+                                let view_id = me.view_id;
+                                CLIAgentSessionsModel::handle(ctx).update(
+                                    ctx,
+                                    |sessions_model, ctx| match detection {
+                                        Some((agent, ref custom_command_prefix))
+                                            if !sessions_model
+                                                .session(view_id)
+                                                .is_some_and(|s| s.agent == agent) =>
+                                        {
+                                            let remote_host = me.active_session_remote_host(ctx);
+                                            let should_auto_toggle_input = agent
+                                                .supports_cli_agent_footer()
+                                                && *AISettings::as_ref(ctx)
+                                                    .auto_open_rich_input_on_cli_agent_start;
+                                            sessions_model.set_session(
+                                                view_id,
+                                                CLIAgentSession {
+                                                    agent,
+                                                    status: CLIAgentSessionStatus::InProgress,
+                                                    session_context:
+                                                        CLIAgentSessionContext::default(),
+                                                    input_state: CLIAgentInputState::Closed,
+                                                    should_auto_toggle_input,
+                                                    listener: None,
+                                                    plugin_version: None,
+                                                    remote_host,
+                                                    draft_text: None,
+                                                    custom_command_prefix: custom_command_prefix
+                                                        .clone(),
+                                                    received_rich_notification: false,
+                                                },
+                                                ctx,
+                                            );
+                                        }
+                                        _ => {}
+                                    },
+                                );
+
+                                // Codex and Grok use OSC 9 (and optional rich OSC 777)
+                                // without requiring a SessionStart sentinel first, so
+                                // create the listener proactively on command detection.
+                                if let Some((agent @ (CLIAgent::Codex | CLIAgent::Grok), _)) =
+                                    detection
+                                {
+                                    me.register_cli_agent_listener_without_session_start_event(
+                                        agent, ctx,
                                     );
+                                }
 
-                                    // Codex and Grok use OSC 9 (and optional rich OSC 777)
-                                    // without requiring a SessionStart sentinel first, so
-                                    // create the listener proactively on command detection.
-                                    if let Some((agent @ (CLIAgent::Codex | CLIAgent::Grok), _)) =
-                                        detection
-                                    {
-                                        me.register_cli_agent_listener_without_session_start_event(
-                                            agent, ctx,
-                                        );
-                                    }
-
-                                    me.maybe_show_use_agent_footer_in_blocklist(ctx);
-                                    me.maybe_auto_open_cli_agent_rich_input(ctx);
-                                    me.input.update(ctx, |input, ctx| {
-                                        input.universal_developer_input_button_bar().update(
-                                            ctx,
-                                            |bar, ctx| {
-                                                bar.update_segmented_control_disabled_state(ctx);
-                                            },
-                                        )
-                                    });
-                                    // Update agent view back button state when command becomes long-running
-                                    if FeatureFlag::AgentView.is_enabled()
-                                        && me.agent_view_controller.as_ref(ctx).is_fullscreen()
-                                    {
-                                        me.update_agent_view_back_button_state(ctx);
-                                        me.update_agent_view_pane_header(ctx);
-                                    }
-                                },
-                            );
-                        }
+                                me.maybe_show_use_agent_footer_in_blocklist(ctx);
+                                me.maybe_auto_open_cli_agent_rich_input(ctx);
+                                me.input.update(ctx, |input, ctx| {
+                                    input.universal_developer_input_button_bar().update(
+                                        ctx,
+                                        |bar, ctx| {
+                                            bar.update_segmented_control_disabled_state(ctx);
+                                        },
+                                    )
+                                });
+                                // Update agent view back button state when command becomes long-running
+                                if FeatureFlag::AgentView.is_enabled()
+                                    && me.agent_view_controller.as_ref(ctx).is_fullscreen()
+                                {
+                                    me.update_agent_view_back_button_state(ctx);
+                                    me.update_agent_view_pane_header(ctx);
+                                }
+                            },
+                        );
                     }
 
                     self.maybe_insert_setup_command_blocks(block_id, ctx);
@@ -27245,23 +27231,6 @@ impl TerminalView {
         self.shell_indicator_type
     }
     #[cfg(unix)]
-    fn shell_family_for_password_prompt_polling(&self, ctx: &AppContext) -> ShellFamily {
-        self.active_block_session_id()
-            .and_then(|session_id| self.sessions.as_ref(ctx).get(session_id))
-            .map(|session| session.shell().shell_type().into())
-            .unwrap_or_else(|| {
-                SessionSettings::handle(ctx).read(ctx, |settings, _| {
-                    settings
-                        .new_session_shell_override
-                        .value()
-                        .clone()
-                        .unwrap_or_default()
-                        .shell_family()
-                })
-            })
-    }
-
-    #[cfg(unix)]
     fn would_emit_block_started_for_password_prompt_polling(
         &self,
         command: &str,
@@ -27276,11 +27245,10 @@ impl TerminalView {
                 Some(format!("{alias_value}{rest}"))
             });
         let warpify_command = expanded_command.as_deref().unwrap_or(command);
-        let shell_family = self.shell_family_for_password_prompt_polling(ctx);
         let warpify_settings = WarpifySettings::as_ref(ctx);
         let is_compatible_subshell_command = warpify_settings
-            .is_compatible_subshell_command(command, shell_family)
-            || warpify_settings.is_compatible_subshell_command(warpify_command, shell_family);
+            .is_compatible_subshell_command(command)
+            || warpify_settings.is_compatible_subshell_command(warpify_command);
 
         !is_compatible_subshell_command
     }
